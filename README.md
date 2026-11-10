@@ -66,11 +66,6 @@ Enter your choice [1-8 or q]:
 ### 1. Download into your project directory
 Drop `lazydock.sh` right next to your `docker-compose.yaml` (or `docker-compose.yml`):
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/LazyDock/main/lazydock.sh -o lazydock.sh
-chmod +x lazydock.sh
-```
-
 ### 2. Run it
 ```bash
 ./lazydock.sh
