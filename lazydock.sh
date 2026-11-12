@@ -224,10 +224,15 @@ build_and_start() {
     fi
 }
 
-# 6. View logs
-view_logs() {
+# Helper: stream logs continuously with auto-reconnect on container restart/EOF
+stream_container_logs() {
+    local clear_first="$1"
     print_header
-    echo -e "${BOLD}Select container to view logs (Ctrl+C to exit log stream):${NC}\n"
+    if [ "$clear_first" == "true" ]; then
+        echo -e "${BOLD}Select container to CLEAR logs and view (Ctrl+C to return to menu):${NC}\n"
+    else
+        echo -e "${BOLD}Select container to view logs (Ctrl+C to return to menu):${NC}\n"
+    fi
 
     mapfile -t ALL_CONTAINERS < <(docker ps -a --format "{{.Names}}" | tr -d '\r')
 
@@ -248,54 +253,71 @@ view_logs() {
 
     if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#ALL_CONTAINERS[@]}" ]; then
         TARGET="${ALL_CONTAINERS[$((choice-1))]}"
-        echo -e "\n${CYAN}Tailing logs for $TARGET (Press Ctrl+C to stop)...${NC}\n"
-        docker logs -f --tail 100 "$TARGET"
-        pause
+
+        if [ "$clear_first" == "true" ]; then
+            echo -e "\n${YELLOW}Locating log file for $TARGET...${NC}"
+            LOG_PATH=$(docker inspect --format='{{.LogPath}}' "$TARGET" 2>/dev/null)
+
+            if [ -n "$LOG_PATH" ] && [ "$LOG_PATH" != "<no value>" ]; then
+                echo -e "${YELLOW}Truncating $LOG_PATH...${NC}"
+                if sudo truncate -s 0 "$LOG_PATH"; then
+                    echo -e "${GREEN}✓ Log file cleared successfully.${NC}"
+                else
+                    echo -e "${RED}✗ Failed to clear log file (sudo required).${NC}"
+                fi
+            else
+                echo -e "${YELLOW}Notice: LogPath not available for $TARGET.${NC}"
+            fi
+        fi
+
+        echo -e "\n${CYAN}Streaming logs for $TARGET (Press Ctrl+C to return to menu)...${NC}\n"
+
+        local keep_streaming=1
+        local first_attach=1
+        local since_ts=""
+        trap 'keep_streaming=0' INT
+
+        while [ "$keep_streaming" -eq 1 ]; do
+            if [ "$first_attach" -eq 1 ]; then
+                docker logs -f --tail 100 "$TARGET"
+                first_attach=0
+            else
+                docker logs -f --since "$since_ts" "$TARGET"
+            fi
+
+            if [ "$keep_streaming" -eq 0 ]; then
+                break
+            fi
+
+            since_ts=$(date -u -d '1 second ago' +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+            if ! docker ps -a --format "{{.Names}}" | tr -d '\r' | grep -qx "$TARGET"; then
+                echo -e "\n${RED}Container '$TARGET' no longer exists.${NC}"
+                break
+            fi
+
+            echo -e "\n${YELLOW}[Log stream disconnected (restart/EOF) — reconnecting in 2s... (Ctrl+C to return to menu)]${NC}"
+            sleep 2
+        done
+
+        trap - INT
+        if [ "$keep_streaming" -eq 0 ]; then
+            echo -e "\n${CYAN}Returning to menu...${NC}"
+            sleep 0.4
+        else
+            pause
+        fi
     fi
+}
+
+# 6. View logs
+view_logs() {
+    stream_container_logs "false"
 }
 
 # 7. Clear log and view
 clear_and_view_logs() {
-    print_header
-    echo -e "${BOLD}Select container to CLEAR logs and view (Ctrl+C to exit log stream):${NC}\n"
-
-    mapfile -t ALL_CONTAINERS < <(docker ps -a --format "{{.Names}}" | tr -d '\r')
-
-    if [ ${#ALL_CONTAINERS[@]} -eq 0 ]; then
-        echo -e "${YELLOW}No containers found.${NC}"
-        pause
-        return
-    fi
-
-    for i in "${!ALL_CONTAINERS[@]}"; do
-        printf "  [%2d] %s\n" "$((i+1))" "${ALL_CONTAINERS[$i]}"
-    done
-    echo ""
-    echo "  [b] Back to main menu"
-    echo ""
-
-    read -rp "Enter choice: " choice
-
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#ALL_CONTAINERS[@]}" ]; then
-        TARGET="${ALL_CONTAINERS[$((choice-1))]}"
-        echo -e "\n${YELLOW}Locating log file for $TARGET...${NC}"
-        LOG_PATH=$(docker inspect --format='{{.LogPath}}' "$TARGET" 2>/dev/null)
-
-        if [ -n "$LOG_PATH" ] && [ "$LOG_PATH" != "<no value>" ]; then
-            echo -e "${YELLOW}Truncating $LOG_PATH...${NC}"
-            if sudo truncate -s 0 "$LOG_PATH"; then
-                echo -e "${GREEN}✓ Log file cleared successfully.${NC}"
-            else
-                echo -e "${RED}✗ Failed to clear log file (sudo required).${NC}"
-            fi
-        else
-            echo -e "${YELLOW}Notice: LogPath not available for $TARGET.${NC}"
-        fi
-
-        echo -e "\n${CYAN}Streaming fresh logs for $TARGET (Press Ctrl+C to exit)...${NC}\n"
-        docker logs -f "$TARGET"
-        pause
-    fi
+    stream_container_logs "true"
 }
 
 # 8. Show status
